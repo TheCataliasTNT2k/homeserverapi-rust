@@ -1,0 +1,9 @@
+version: "3.4"
+services:
+  telegram:
+    image: inventory-telegram
+    environment:
+      SETTINGS_PATH: /tmp/settings.json
+      RUST_LOG: INFO
+    volumes:
+      - ./settings.json:/tmp/settings.json
