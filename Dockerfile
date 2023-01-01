@@ -22,12 +22,12 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 
 RUN cargo build --locked --release \
-    && strip target/release/inventory-telegram -o app
+    && strip target/release/homeserverapi -o app
 
 
 FROM scratch
 
-LABEL org.opencontainers.image.source="https://github.com/TheCataliasTNT2k/inventory-telegram-bot"
+LABEL org.opencontainers.image.source="https://github.com/TheCataliasTNT2k/homeserverapi-rust"
 
 COPY --from=builder /build/app /
 
