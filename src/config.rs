@@ -17,6 +17,9 @@ pub struct Config {
     /// token for influx database
     pub influx_token: Option<String>,
 
+    /// measurement for influx database
+    pub influx_measurement: Option<String>,
+
     /// url for the inverter
     pub inverter_url: Option<Url>,
 
@@ -33,6 +36,7 @@ impl Default for Config {
             healthcheck_url: None,
             influx_url: None,
             influx_token: None,
+            influx_measurement: None,
             inverter_url: None,
             app_host: "127.0.0.1".to_owned(),
             app_port: "3000".to_owned(),
