@@ -49,7 +49,7 @@ async fn add_point(config: &Config) {
         }
     };
     let body = format!(
-        "solar old={},new={},both={},battery_percentage={},autonomy_percentage={},self_consumption_percentage={},drain_from_battery={},drain_from_grid={},house_consumption={} {}",
+        "solar_neu old={},new={},both={},battery_percentage={},autonomy_percentage={},self_consumption_percentage={},drain_from_battery={},drain_from_grid={},house_consumption={} {}",
         data.old_inverter_power,
         data.new_inverter_power,
         data.both_inverter_power,
@@ -111,6 +111,10 @@ async fn start() -> Result<()> {
     ensure!(
         config.influx_url.is_some(),
         "Influx url should be set!"
+    );
+    ensure!(
+        config.influx_measurement.is_some(),
+        "Influx measurement should be set!"
     );
     ensure!(
          config.influx_token.is_some(),
