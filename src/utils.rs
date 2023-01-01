@@ -39,9 +39,6 @@ struct SecondaryMeter {
 
 #[derive(Deserialize, Debug)]
 struct Inverter {
-    /// power produced by both pv systems; data in watts
-    #[serde(alias = "P")]
-    cumulative_power: f64,
     /// current charge of the battery; data in percent
     #[serde(alias = "SOC")]
     battery_percent: f64,
@@ -95,13 +92,12 @@ async fn get_data(config: &Config) -> anyhow::Result<SolarResponse> {
         power: 0.0,
     });
     let inverter = json.inverters.last().unwrap_or_else(|| &Inverter {
-        cumulative_power: 0.0,
         battery_percent: 0.0,
     });
     Ok(SolarResponse {
         old_inverter_power: secondary_value.power as u32,
         new_inverter_power: json.site.power_pv as u32,
-        both_inverter_power: inverter.cumulative_power as u32,
+        both_inverter_power: (secondary_value.power + json.site.power_pv) as u32,
         battery_load_percentage: inverter.battery_percent as u8,
         autonomy_percent: json.site.autonomy as u8,
         self_consumption_percent: json.site.self_consumption as u8,
