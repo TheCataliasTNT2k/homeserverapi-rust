@@ -23,11 +23,27 @@ pub struct Config {
     /// url for the inverter
     pub inverter_url: Option<Url>,
 
+    /// url for the wattpilot
+    pub wattpilot_url: Option<Url>,
+    
+    /// password for wattpilot
+    pub wattpilot_password: Option<String>,
+
     /// ip to bind the http server
     pub app_host: String,
 
     /// port to bind the http server
     pub app_port: String,
+
+    /// allowed origins (CORS)\
+    /// e.g.: `FQDN, FQDN, FQDN`\
+    /// empty string = allow all\
+    /// not set = allow all
+    pub allowed_origins: String,
+
+    /// swagger servers\
+    /// e.g.: `https.example.com, http://test.com`
+    pub swagger_servers: String,
 }
 
 impl Default for Config {
@@ -38,8 +54,12 @@ impl Default for Config {
             influx_token: None,
             influx_measurement: None,
             inverter_url: None,
+            wattpilot_url: None,
+            wattpilot_password: None,
             app_host: "127.0.0.1".to_owned(),
             app_port: "3000".to_owned(),
+            allowed_origins: String::new(),
+            swagger_servers: String::new()
         }
     }
 }

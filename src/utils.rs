@@ -1,119 +1,139 @@
-use std::collections::HashMap;
-use anyhow::anyhow;
+use std::env;
+use std::sync::Arc;
+use poem::http::header::AUTHORIZATION;
+use serde::{Deserialize, Deserializer};
+use time::OffsetDateTime;
+use tokio::sync::RwLock;
+use tracing::{error, info};
+use tracing::log::warn;
 use crate::config::Config;
-use poem::{Error, Result};
-use reqwest::{StatusCode};
-use poem_openapi::{Object};
-use serde::Deserialize;
-use tracing::error;
+use crate::inverter::{fetch_solar_values, SolarData};
+use crate::wattpilot::{Wattpilot, WattpilotData};
 
-#[derive(Object, Debug)]
-pub struct SolarResponse {
-    /// power produced by old pv system; data in watts
-    pub(crate) old_inverter_power: u32,
-    /// power produced by new pv system; data in watts
-    pub(crate) new_inverter_power: u32,
-    /// power produced by both pv systems; data in watts
-    pub(crate) both_inverter_power: u32,
-    /// current charge of the battery; data in percent
-    pub(crate) battery_load_percentage: u8,
-    /// current autonomy of the system; data in percent
-    pub(crate) autonomy_percent: u8,
-    /// current self consumption value; data in percent
-    pub(crate) self_consumption_percent: u8,
-    /// how much power is drained from battery; negative value means the battery is charging; data in watts
-    pub(crate) drain_from_battery: i64,
-    /// how much power is drained from grid; negative value means power is fed into the grid; data in watts
-    pub(crate) drain_from_grid: i64,
-    /// how much power the whole house is consuming; data in watts
-    pub(crate) house_consumption: u64,
+pub(crate) fn deserialize_null_default<'de, D, T>(deserializer: D) -> poem::Result<T, D::Error>
+    where
+        T: Default + Deserialize<'de>,
+        D: Deserializer<'de>,
+{
+    let opt = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
 }
 
+async fn contact_monitoring(config: &Config, code: u32, body: Option<String>) {
+    let client2 = reqwest::Client::new();
 
-#[derive(Deserialize, Debug)]
-struct SecondaryMeter {
-    /// power produced by old pv system; data in watts
-    #[serde(alias = "P")]
-    power: f64,
-}
-
-#[derive(Deserialize, Debug)]
-struct Inverter {
-    /// current charge of the battery; data in percent
-    #[serde(alias = "SOC")]
-    battery_percent: f64,
-}
-
-#[derive(Deserialize, Debug)]
-struct Site {
-    /// how much power is drained from battery; negative value means the battery is charging; data in watts
-    #[serde(alias = "P_Akku")]
-    power_battery: f64,
-    /// how much power is drained from grid; negative value means power is fed into the grid; data in watts
-    #[serde(alias = "P_Grid")]
-    power_grid: f64,
-    /// how much power the whole house is consuming; always negative!; data in watts
-    #[serde(alias = "P_Load")]
-    house_consumption: f64,
-    /// power produced by new pv system; data in watts
-    #[serde(alias = "P_PV")]
-    power_pv: f64,
-    /// current autonomy of the system; data in percent
-    #[serde(alias = "rel_Autonomy")]
-    autonomy: f64,
-    /// current self consumption value; data in percent
-    #[serde(alias = "rel_SelfConsumption")]
-    self_consumption: f64,
-}
-
-#[derive(Deserialize, Debug)]
-struct SolarJson {
-    #[serde(alias = "SecondaryMeters")]
-    secondary_meters: HashMap<String, SecondaryMeter>,
-    #[serde(alias = "inverters")]
-    inverters: Vec<Inverter>,
-    #[serde(alias = "inverters")]
-    site: Site,
-}
-
-async fn get_data(config: &Config) -> anyhow::Result<SolarResponse> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(config.inverter_url.clone().unwrap().join("/status/powerflow")?)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        return Err(anyhow!(Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)));
+    // config will have this field checked at this time
+    #[allow(clippy::unwrap_used)]
+        let mut url = config.healthcheck_url.clone().unwrap();
+    #[allow(clippy::unwrap_used)]
+    url.path_segments_mut().unwrap().push(code.to_string().as_str());
+    if let Err(err) = match body {
+        None => {
+            client2
+                .post(url)
+                .send()
+                .await
+        }
+        Some(b) => {
+            client2
+                .post(url)
+                .body(b)
+                .send()
+                .await
+        }
+    } {
+        error!("Error while contacting monitoring: {err}");
     }
-    let text = resp.text().await?;
-    let json: SolarJson = serde_json::from_str(text.as_str())?;
-
-    let secondary_value = json.secondary_meters.values().last().unwrap_or_else(|| &SecondaryMeter {
-        power: 0.0,
-    });
-    let inverter = json.inverters.last().unwrap_or_else(|| &Inverter {
-        battery_percent: 0.0,
-    });
-    Ok(SolarResponse {
-        old_inverter_power: secondary_value.power as u32,
-        new_inverter_power: json.site.power_pv as u32,
-        both_inverter_power: (secondary_value.power + json.site.power_pv) as u32,
-        battery_load_percentage: inverter.battery_percent as u8,
-        autonomy_percent: json.site.autonomy as u8,
-        self_consumption_percent: json.site.self_consumption as u8,
-        drain_from_battery: json.site.power_battery as i64,
-        drain_from_grid: json.site.power_grid as i64,
-        house_consumption: (-1.0 * json.site.house_consumption) as u64,
-    })
 }
 
-
-pub async fn get_solar_values(config: &Config) -> Result<SolarResponse> {
-    return match get_data(config).await {
-        Ok(v) => { Ok(v) }
+/// add point to database
+pub(crate) async fn add_point(
+    config: &Config,
+    solar_data: &Arc<RwLock<SolarData>>,
+    wp_arc: &Option<Arc<RwLock<Wattpilot>>>
+) {
+    let actual_time = OffsetDateTime::now_utc();
+    if !fetch_solar_values(config, solar_data.clone()).await {
+        contact_monitoring(config, 1, Some("Solar values could not be fetched".to_owned())).await;
+        return;
+    }
+    if env::var("NO_DB").is_ok() {
+        contact_monitoring(config, 0, None).await;
+        return;
+    }
+    info!("Adding point to database {}", actual_time);
+    let solar = solar_data.read().await;
+    let solar_age = (OffsetDateTime::now_utc() - solar.last_time).as_seconds_f64();
+    if solar_age > 30f64 {
+        warn!("Solar data too old: {solar_age}");
+        contact_monitoring(config, 2, Some(format!("Solar data too old: {solar_age}").to_owned())).await;
+    }
+    let wp = match wp_arc {
+        None => WattpilotData::default(),
+        Some(some) => {
+            let read = some.read().await;
+            let wp_age = (OffsetDateTime::now_utc() - read.data.read().await.last_updated).as_seconds_f64();
+            if !read.authenticated || wp_age > 30f64  {
+                warn!("Wattpilot data too old: {wp_age}");
+                contact_monitoring(config, 2, Some(format!("Wattpilot data too old: {wp_age}").to_owned())).await;
+                WattpilotData::default()
+            } else {
+                read.data.read().await.clone()
+            }
+        }
+    };
+    // has been checked before
+    #[allow(clippy::unwrap_used)]
+    let body = format!(
+        "{} old={},new={},both={},battery_percentage={},autonomy_percentage={},self_consumption_percentage={},drain_from_battery={},drain_from_grid={},house_consumption={},\
+        wp_charging_values=\"{}\",wp_car_state={},wp_model_status={},wp_wh={},wp_tpcm={},wp_lps={},wp_ets={},wp_power={} \
+        {}",
+        config.influx_measurement.clone().unwrap(),
+        // solar stuff
+        solar.old_inverter_power,
+        solar.new_inverter_power,
+        solar.both_inverter_power,
+        solar.battery_load_percentage,
+        solar.autonomy_percent,
+        solar.self_consumption_percent,
+        solar.drain_from_battery,
+        solar.drain_from_grid,
+        solar.house_consumption,
+        // wp stuff
+        serde_json::to_string(&wp.charging_values).unwrap(),
+        serde_json::to_string(&wp.car_state).unwrap(),
+        serde_json::to_string(&wp.model_status).unwrap(),
+        wp.charged_since_connected,
+        serde_json::to_string(&wp.tpcm).unwrap(),
+        wp.lps,
+        wp.ets,
+        wp.charging_values.pt,
+        // timestamp
+        actual_time.unix_timestamp()
+    );
+    let client = reqwest::Client::new();
+    // unwraps can not panic
+    #[allow(clippy::unwrap_used)]
+    match client
+        .post(format!("{}&precision=s", config.influx_url.clone().unwrap()))
+        .header(AUTHORIZATION, format!("Token {}", config.influx_token.clone().unwrap()))
+        .body(body)
+        .send()
+        .await {
+        Ok(v) => {
+            if v.status().is_success() {
+                contact_monitoring(config, 0, None).await;
+            } else {
+                error!("Influx success Error: {:?}", v);
+                if let Ok(text) = v.text().await {
+                    error!("Influx success Error: {:?}", text);
+                }
+                contact_monitoring(config, 2, Some("Failed to put data into influx".to_owned())).await;
+            }
+        }
         Err(err) => {
-            error!("{:?}", err);
-            return Err(Error::from_status(StatusCode::INTERNAL_SERVER_ERROR));
+            error!("Influx response Error: {}", err);
+            contact_monitoring(config, 2, Some("Failed to put data into influx".to_owned())).await;
         }
     };
 }

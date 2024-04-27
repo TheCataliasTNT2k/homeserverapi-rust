@@ -1,12 +1,24 @@
-use crate::AppState;
-use poem::web::{Data};
-use poem::{Result};
-use poem_openapi::{ApiResponse, OpenApi, Tags};
+use poem::Result;
+use poem::web::Data;
+use poem_openapi::{ApiResponse, Object, OpenApi, Tags};
 use poem_openapi::payload::Json;
-use crate::utils::{get_solar_values, SolarResponse};
+
+use crate::AppState;
+use crate::inverter::SolarData;
+use crate::wattpilot::WattpilotData;
 
 // GLOBALS -----------------------------------------------------------------------------------------
 
+// -------------------------------------------------------------------------------------------------
+
+// OBJECTS -----------------------------------------------------------------------------------------
+#[derive(Object)]
+struct SolarRespData {
+    /// data of the connected wattpilot
+    wattpilot_data: WattpilotData,
+    /// data of rest of system
+    solar_data: SolarData,
+}
 // -------------------------------------------------------------------------------------------------
 
 // ERRORS ------------------------------------------------------------------------------------------
@@ -19,7 +31,7 @@ use crate::utils::{get_solar_values, SolarResponse};
 enum SolarResp {
     /// everything is fine
     #[oai(status = 200)]
-    Ok(Json<SolarResponse>),
+    Ok(Json<SolarRespData>),
 
     /// something went wrong
     #[oai(status = 500)]
@@ -42,13 +54,21 @@ enum Tag {
 
 #[OpenApi(prefix_path = "/api/solar", tag = "Tag::Solar")]
 impl SolarApi {
-    /// get current inverter values
+    /// get current system values
     #[oai(path = "/", method = "get")]
     async fn get_values(
         &self,
         state: Data<&AppState>,
     ) -> Result<SolarResp> {
-        let data = get_solar_values(&state.config).await?;
-        Ok(SolarResp::Ok(Json(data)))
+        Ok(
+            SolarResp::Ok(
+                Json(
+                    SolarRespData {
+                        wattpilot_data: state.wattpilot_data.read().await.clone(),
+                        solar_data: state.solar_data.read().await.clone(),
+                    }
+                )
+            )
+        )
     }
 }
